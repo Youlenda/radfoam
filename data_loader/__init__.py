@@ -8,11 +8,13 @@ import radfoam
 
 from .colmap import COLMAPDataset
 from .blender import BlenderDataset
+from .omni import OMNIDataset
 
 
 dataset_dict = {
     "colmap": COLMAPDataset,
     "blender": BlenderDataset,
+    "omni": OMNIDataset,
 }
 
 
