@@ -139,5 +139,5 @@ class OMNIDataset:
 
         self.points3D, self.points3D_color = read_ascii_ply(os.path.join(datadir, "pcd.ply"))
         
-        self.fx = 0
-        self.fy = 0
+        self.fx = self.img_wh[0]/2*np.pi
+        self.fy = self.img_wh[1]/np.pi
