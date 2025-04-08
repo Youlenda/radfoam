@@ -5,94 +5,127 @@ from PIL import Image
 from tqdm import tqdm
 import torch
 import pycolmap
+from pathlib import Path
+import json
 
 
-def get_cam_ray_dirs(camera):
-    x = np.arange(camera.width, dtype=np.float32) + 0.5
-    y = np.arange(camera.height, dtype=np.float32) + 0.5
+def get_omni_ray_dirs(img_wh):
+    width, height = img_wh
+    x = np.arange(width, dtype=np.float32) + 0.5
+    y = np.arange(height, dtype=np.float32) + 0.5
     x, y = np.meshgrid(x, y)
-    pix_coords = np.stack([x, y], axis=-1).reshape(-1, 2)
-    ip_coords = camera.cam_from_img(pix_coords)
-    ip_coords = np.concatenate(
-        [ip_coords, np.ones_like(ip_coords[:, :1])], axis=-1
-    )
-    ray_dirs = ip_coords / np.linalg.norm(ip_coords, axis=-1, keepdims=True)
+
+    u = x / width
+    v = y / height
+    
+    theta = 2 * np.pi * (u - 0.5)
+    phi = np.pi * (v - 0.5)
+
+    ray_dirs = np.stack([
+        np.cos(phi) * np.sin(theta),
+        np.sin(phi),
+        np.cos(phi) * np.cos(theta)
+    ], axis=-1)
+    ray_dirs = ray_dirs.reshape(-1, 3)
     return torch.tensor(ray_dirs, dtype=torch.float32)
 
-def load_sorted_names(file_path):
-    with open(file_path, "r") as f:
-        names = f.read().splitlines()
-    sorted_names = sorted(names, key=lambda x: int(x.split("_")[-1]))
-    return [name + ".jpg" for name in sorted_names]
+def make_c2w(R, C):
+    R = np.array(R)
+    C = np.array(C).reshape(3, 1)
+    c2w = np.zeros((3,4))
+    c2w[:3, :3] = R.T
+    c2w[:3, 3] = (-R.T @ C).reshape(-1)
+    return torch.tensor(c2w, dtype=torch.float32)
+
+def read_ascii_ply(filepath):
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+
+    # Separate header and data
+    header_end = lines.index("end_header\n")
+    header = lines[:header_end]
+    data_lines = lines[header_end + 1:]
+
+    # Parse property order
+    property_names = [
+        line.strip().split()[-1]
+        for line in header
+        if line.startswith("property")
+    ]
+
+    # Load the data
+    data = np.loadtxt(data_lines, dtype=np.float32)
+
+    # Get point positions
+    xyz = data[:, [property_names.index('x'),
+                   property_names.index('y'),
+                   property_names.index('z')]]
+
+    # Get RGB colors
+    rgb = data[:, [property_names.index('red'),
+                   property_names.index('green'),
+                   property_names.index('blue')]] / 255.0
+
+    # Convert to torch tensors
+    points3D = torch.tensor(xyz, dtype=torch.float32)
+    points3D_color = torch.tensor(rgb, dtype=torch.float32)
+
+    return points3D, points3D_color
 
 class OMNIDataset:
     def __init__(self, datadir, split, downsample):
-        assert downsample in [1, 2, 4, 8]
-
-        self.root_dir = datadir
-        self.split = split
-        self.downsample = downsample
-
-        if downsample == 1:
-            images_dir = os.path.join(datadir, "images")
-        else: #TODO
-            images_dir = os.path.join(datadir, f"images_{downsample}")
-
-        if not os.path.exists(images_dir):
-            raise ValueError(f"Images directory {images_dir} not found")
-
-        # Load train and test views
-        train_names = load_sorted_names(os.path.join(self.root_dir, "train.txt"))
-        test_names = load_sorted_names(os.path.join(self.root_dir, "test.txt"))
+        images_dir = os.path.join(datadir, "images")
         
-        train_indices = np.arange(len(train_names))
-        test_indices = np.arange(len(test_names))
+        file_path = os.path.join(datadir, f"{split}.txt")
+        with open(file_path, "r") as f:
+            names = f.read().splitlines()
 
-        im = Image.open(os.path.join(images_dir, train_names[0]))
+        names = [name + ".jpg" for name in names]
+        names = list(str(name) for name in names)
+
+        im = Image.open(os.path.join(images_dir, names[0]))
         self.img_wh = im.size
         im.close()
-        breakpoint()
-        self.camera = list(self.reconstruction.cameras.values())[0]
-        self.camera.rescale(self.img_wh[0], self.img_wh[1])
 
-        self.fx = self.camera.focal_length_x
-        self.fy = self.camera.focal_length_y
+        cam_ray_dirs = get_omni_ray_dirs(self.img_wh)
 
-        cam_ray_dirs = get_cam_ray_dirs(self.camera)
+        with open(os.path.join(datadir, "data_views.json")) as f:
+            view_data = json.load(f)["views"]
 
-        self.images = []
-        for name in names:
-            image = None
-            for image_id in self.reconstruction.images:
-                image = self.reconstruction.images[image_id]
-                if image.name == name:
+        with open(os.path.join(datadir, "data_extrinsics.json")) as f:
+            extrinsics_data = json.load(f)["extrinsics"]
+
+        filename_to_pose = {}
+        for ext in extrinsics_data:
+            pose_id = ext["key"]
+            R = ext["value"]["rotation"]
+            C = ext["value"]["center"]
+            filename = None
+            for view in view_data:
+                if view["value"]["ptr_wrapper"]["data"]["id_pose"] == pose_id:
+                    filename = view["value"]["ptr_wrapper"]["data"]["filename"]
                     break
-
-            if image is None:
-                raise ValueError(
-                    f"Image {name} not found in COLMAP reconstruction"
-                )
-
-            self.images.append(image)
-
+            if filename:
+                filename_to_pose[filename] = (R, C)
+                
         self.poses = []
         self.all_rays = []
         self.all_rgbs = []
-        for image in tqdm(self.images):
-            c2w = torch.tensor(
-                image.cam_from_world.inverse().matrix(), dtype=torch.float32
-            )
+        for name in names:
+            R, C = filename_to_pose[name]
+            c2w = make_c2w(R, C)
             self.poses.append(c2w)
             world_ray_dirs = torch.einsum(
                 "ij,kj->ik",
                 cam_ray_dirs,
                 c2w[:, :3],
             )
+
             world_ray_origins = c2w[:, 3] + torch.zeros_like(cam_ray_dirs)
             world_rays = torch.cat([world_ray_origins, world_ray_dirs], dim=-1)
             world_rays = world_rays.reshape(self.img_wh[1], self.img_wh[0], 6)
 
-            im = Image.open(os.path.join(images_dir, image.name))
+            im = Image.open(os.path.join(images_dir, name))
             im = im.convert("RGB")
             rgbs = torch.tensor(np.array(im), dtype=torch.float32) / 255.0
             im.close()
@@ -100,20 +133,11 @@ class OMNIDataset:
             self.all_rays.append(world_rays)
             self.all_rgbs.append(rgbs)
 
-        self.poses = torch.stack(self.poses)
-        self.all_rays = torch.stack(self.all_rays)
-        self.all_rgbs = torch.stack(self.all_rgbs)
+        self.poses = torch.stack(self.poses)       # torch.Size([133, 3, 4])
+        self.all_rays = torch.stack(self.all_rays) # torch.Size([133, 960, 1920, 6])
+        self.all_rgbs = torch.stack(self.all_rgbs) # torch.Size([133, 960, 1920, 3])
 
-        self.points3D = []
-        self.points3D_color = []
-        for point in self.reconstruction.points3D.values():
-            self.points3D.append(point.xyz)
-            self.points3D_color.append(point.color)
-
-        self.points3D = torch.tensor(
-            np.array(self.points3D), dtype=torch.float32
-        )
-        self.points3D_color = torch.tensor(
-            np.array(self.points3D_color), dtype=torch.float32
-        )
-        self.points3D_color = self.points3D_color / 255.0
+        self.points3D, self.points3D_color = read_ascii_ply(os.path.join(datadir, "pcd.ply"))
+        
+        self.fx = 0
+        self.fy = 0
