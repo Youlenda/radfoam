@@ -127,7 +127,7 @@ def train(args, pipeline_args, model_args, optimizer_args, dataset_args):
         dist_sq = (xx - cx)**2 + (yy - cy)**2
         r_sq = r**2
 
-        mask = dist_sq < r_sq
+        mask = dist_sq <= r_sq
         
         with torch.no_grad():
             for i in range(rays.shape[0]):

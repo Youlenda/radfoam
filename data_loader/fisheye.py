@@ -129,7 +129,7 @@ class Fisheye:
         dist_sq = (xx - cx)**2 + (yy - cy)**2
         r_sq = r**2
 
-        self.mask = dist_sq < r_sq
+        self.mask = dist_sq <= r_sq
 
         for image in tqdm(self.images):
             c2w = torch.tensor(

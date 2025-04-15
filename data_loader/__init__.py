@@ -11,7 +11,6 @@ from .blender import BlenderDataset
 from .omni import OMNIDataset
 from .fisheye import Fisheye
 
-
 dataset_dict = {
     "colmap": COLMAPDataset,
     "blender": BlenderDataset,
@@ -103,9 +102,9 @@ class DataHandler:
 
                 self.batch_size = self.rays_per_batch // (self.patch_size**2)
             else:
-                self.mask = split_dataset.mask
-                if self.mask is not None:
-                    print("------ assume fisheye.")
+                try:
+                    self.mask = split_dataset.mask
+                    print("------ fisheye.")
                     self.rays_masked = self.rays[:, self.mask]
                     self.train_rays = einops.rearrange(self.rays_masked, "n hw r -> (n hw) r")
 
@@ -114,8 +113,8 @@ class DataHandler:
                     
                     self.alphas_masked = self.alphas[:, self.mask]
                     self.train_alphas = einops.rearrange(self.alphas_masked, "n hw 1 -> (n hw) 1")
-                else:
-                    print("------ assume NOT fisheye.")
+                except:
+                    print("------ NOT fisheye.")
                     self.train_rays = einops.rearrange(
                         self.rays, "n h w r -> (n h w) r"
                     )

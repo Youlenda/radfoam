@@ -28,7 +28,7 @@ freeze_points: 18_000                  # Points are frozen after this cycle
 # Dataset Parameters
 dataset: "fisheye"
 data_path: "/home/youlenda/360/datasets/captured/outdoor"
-scene: "cult_16_side_a"
+scene: "cult_15_side_a"
 patch_based: false
 downsample: [1, 1] #[8, 4]                     # Image downsample factors
 downsample_iterations: [0, 5_000]
