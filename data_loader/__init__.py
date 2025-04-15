@@ -9,12 +9,14 @@ import radfoam
 from .colmap import COLMAPDataset
 from .blender import BlenderDataset
 from .omni import OMNIDataset
+from .fisheye import Fisheye
 
 
 dataset_dict = {
     "colmap": COLMAPDataset,
     "blender": BlenderDataset,
     "omni": OMNIDataset,
+    "fisheye": Fisheye,
 }
 
 
@@ -71,7 +73,9 @@ class DataHandler:
         except:
             self.points3D = None
             self.points3D_colors = None
-
+        
+        self.mask = None
+        
         if split == "train":
             if self.args.patch_based:
                 dw = self.img_wh[0] - (self.img_wh[0] % self.patch_size)
@@ -99,15 +103,28 @@ class DataHandler:
 
                 self.batch_size = self.rays_per_batch // (self.patch_size**2)
             else:
-                self.train_rays = einops.rearrange(
-                    self.rays, "n h w r -> (n h w) r"
-                )
-                self.train_rgbs = einops.rearrange(
-                    self.rgbs, "n h w c -> (n h w) c"
-                )
-                self.train_alphas = einops.rearrange(
-                    self.alphas, "n h w 1 -> (n h w) 1"
-                )
+                self.mask = split_dataset.mask
+                if self.mask is not None:
+                    print("------ assume fisheye.")
+                    self.rays_masked = self.rays[:, self.mask]
+                    self.train_rays = einops.rearrange(self.rays_masked, "n hw r -> (n hw) r")
+
+                    self.rgbs_masked = self.rgbs[:, self.mask]
+                    self.train_rgbs = einops.rearrange(self.rgbs_masked, "n hw c -> (n hw) c")
+                    
+                    self.alphas_masked = self.alphas[:, self.mask]
+                    self.train_alphas = einops.rearrange(self.alphas_masked, "n hw 1 -> (n hw) 1")
+                else:
+                    print("------ assume NOT fisheye.")
+                    self.train_rays = einops.rearrange(
+                        self.rays, "n h w r -> (n h w) r"
+                    )
+                    self.train_rgbs = einops.rearrange(
+                        self.rgbs, "n h w c -> (n h w) c"
+                    )
+                    self.train_alphas = einops.rearrange(
+                        self.alphas, "n h w 1 -> (n h w) 1"
+                    )
 
                 self.batch_size = self.rays_per_batch
 

@@ -111,6 +111,24 @@ def train(args, pipeline_args, model_args, optimizer_args, dataset_args):
         )
 
         psnr_list = []
+        
+        W, H = (2880,2880)
+        
+        cx = W/2.0
+        cy = H/2.0
+        
+        r = min(W,H) * 0.5
+
+        yy, xx = torch.meshgrid(
+            torch.arange(H, dtype=torch.float32),
+            torch.arange(W, dtype=torch.float32),
+            indexing='ij'
+        )
+        dist_sq = (xx - cx)**2 + (yy - cy)**2
+        r_sq = r**2
+
+        mask = dist_sq < r_sq
+        
         with torch.no_grad():
             for i in range(rays.shape[0]):
                 ray_batch = ray_batch_fetcher.next()[0]
@@ -121,8 +139,9 @@ def train(args, pipeline_args, model_args, optimizer_args, dataset_args):
                 opacity = output[..., -1:]
                 rgb_output = output[..., :3] + (1 - opacity)
                 rgb_output = rgb_output.reshape(*rgb_batch.shape).clip(0, 1)
+                rgb_output[~mask] = 0.0
 
-                img_psnr = psnr(rgb_output, rgb_batch).mean()
+                img_psnr = psnr(rgb_output[mask], rgb_batch[mask]).mean()
                 psnr_list.append(img_psnr)
                 torch.cuda.synchronize()
 
